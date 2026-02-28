@@ -298,15 +298,22 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
+        // hold read lock
         let state = self.state.read();
-        let _value = state.memtable.get(_key);
-        if let Some(_value) = &_value
-            && _value.is_empty()
-        {
-            return Ok(None);
+
+        // iterator over first active memtables, then inactive ones
+        let memtable_iter = std::iter::once(&state.memtable).chain(state.imm_memtables.iter());
+        for mem_table in memtable_iter {
+            let value = mem_table.get(_key);
+            if let Some(value) = value {
+                if value.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(value));
+            }
         }
 
-        Ok(_value)
+        Ok(None)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
