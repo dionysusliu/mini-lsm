@@ -32,7 +32,7 @@ use crate::compact::{
 };
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::MemTable;
+use crate::mem_table::{self, MemTable};
 use crate::mvcc::LsmMvccInner;
 use crate::table::SsTable;
 
@@ -300,7 +300,9 @@ impl LsmStorageInner {
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
         let state = self.state.read();
         let _value = state.memtable.get(_key);
-        if let Some(_value) = &_value && _value.is_empty() {
+        if let Some(_value) = &_value
+            && _value.is_empty()
+        {
             return Ok(None);
         }
 
@@ -314,14 +316,22 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let state = self.state.read();
-        state.memtable.put(_key, _value)
+        let res = self.state.read().memtable.put(_key, _value);
+
+        // allocate new memtable
+        if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
+            let state_lock = self.state_lock.lock(); // serialize the writers
+            if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
+                let _ = self.force_freeze_memtable(&state_lock); // ignore freezing erros
+            }
+        }
+
+        res
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        let state = self.state.read();
-        state.memtable.put(_key, &bytes::Bytes::new())
+        self.put(_key, &bytes::Bytes::new())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -346,7 +356,18 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        unimplemented!()
+        let new_mem_table = Arc::new(mem_table::MemTable::create(self.next_sst_id()));
+
+        {
+            let mut snapshot = self.state.read().as_ref().clone(); // we do copy on write, so clone the struct
+            snapshot
+                .imm_memtables
+                .insert(0, Arc::clone(&snapshot.memtable));
+            snapshot.memtable = Arc::clone(&new_mem_table);
+            *self.state.write() = Arc::new(snapshot); // commit the state update
+        }
+
+        Ok(())
     }
 
     /// Force flush the earliest-created immutable memtable to disk
