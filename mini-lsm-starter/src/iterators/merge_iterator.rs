@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
+// #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
+// #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::cmp::{self};
 use std::collections::BinaryHeap;
@@ -103,21 +103,6 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     }
 
     fn next(&mut self) -> Result<()> {
-        // while let Some(iter) = self.iters.peek_mut() {
-        //     if iter.1.key() == self.current.as_ref().unwrap().1.key() {
-        //         // stale keys
-        //         continue;
-        //     }
-        //     let poped_iter = PeekMut::pop(iter);
-        //     *self.current.as_mut().unwrap() = poped_iter;
-        //     return Ok(());
-        // }
-        //
-        // // no more iter if the control flow gets here
-        // self.current = None;
-        // Ok(())
-        //
-
         let current = self.current.as_ref().unwrap();
         let current_key = current.1.key();
 
@@ -125,7 +110,7 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         while let Some(mut iter) = self.iters.peek_mut() {
             if iter.1.key() == current_key {
                 if let Err(e) = iter.1.next() {
-                    PeekMut::pop(iter);
+                    PeekMut::pop(iter); // pop the invalid iter out of heap
                     return Err(e);
                 }
                 if !iter.1.is_valid() {
