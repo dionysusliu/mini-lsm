@@ -48,13 +48,15 @@ impl SsTableIterator {
         let mut iter = Self {
             table: table.clone(),
             blk_idx,
-            blk_iter: BlockIterator::create_and_seek_to_key(table.read_block(blk_idx)?, key),
+            blk_iter: BlockIterator::create_and_seek_to_key(table.read_block_cached(blk_idx)?, key),
         };
-        if !iter.blk_iter.is_valid() { // not found by first key, so our iterator start at next block
+        if !iter.blk_iter.is_valid() {
+            // not found by first key, so our iterator start at next block
             iter.blk_idx += 1;
             if iter.blk_idx < iter.table.num_of_blocks() {
-                iter.blk_iter =
-                    BlockIterator::create_and_seek_to_first(iter.table.read_block(iter.blk_idx)?);
+                iter.blk_iter = BlockIterator::create_and_seek_to_first(
+                    iter.table.read_block_cached(iter.blk_idx)?,
+                );
             }
         }
         Ok(iter)
@@ -65,7 +67,7 @@ impl SsTableIterator {
         Ok(Self {
             table: table.clone(),
             blk_idx: 0,
-            blk_iter: BlockIterator::create_and_seek_to_first(table.read_block(0)?),
+            blk_iter: BlockIterator::create_and_seek_to_first(table.read_block_cached(0)?),
         })
     }
 
@@ -74,7 +76,7 @@ impl SsTableIterator {
         self.blk_idx = 0;
         let _ = mem::replace(
             &mut self.blk_iter,
-            BlockIterator::create_and_seek_to_first(self.table.read_block(0)?),
+            BlockIterator::create_and_seek_to_first(self.table.read_block_cached(0)?),
         );
 
         Ok(())
@@ -129,7 +131,7 @@ impl StorageIterator for SsTableIterator {
 
             // have some block, update the block iterator then
             self.blk_idx = next_blk_idx;
-            let new_block: Arc<Block> = self.table.read_block(next_blk_idx)?;
+            let new_block: Arc<Block> = self.table.read_block_cached(next_blk_idx)?;
             let _ = mem::replace(
                 &mut self.blk_iter,
                 BlockIterator::create_and_seek_to_first(new_block),
