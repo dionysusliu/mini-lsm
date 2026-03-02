@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
+// #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
+// #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use anyhow::Result;
 
@@ -25,6 +25,7 @@ pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
     // Add fields as need
+    use_a: bool, // true if next key is from a, else next key is from b
 }
 
 impl<
@@ -32,8 +33,21 @@ impl<
     B: 'static + for<'a> StorageIterator<KeyType<'a> = A::KeyType<'a>>,
 > TwoMergeIterator<A, B>
 {
-    pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+    pub fn create(a: A, mut b: B) -> Result<Self> {
+        if a.is_valid() && b.is_valid() && a.key() == b.key() {
+            b.next()?;
+        }
+        let use_a = Self::choose_a(&a, &b);
+        Ok(Self { a, b, use_a })
+    }
+
+    fn choose_a(a: &A, b: &B) -> bool {
+        match (a.is_valid(), b.is_valid()) {
+            (true, true) => a.key() <= b.key(),
+            (true, false) => true,
+            (false, true) => false,
+            (false, false) => false,
+        }
     }
 }
 
@@ -45,18 +59,44 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        if self.use_a {
+            self.a.key()
+        } else {
+            self.b.key()
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if self.use_a {
+            self.a.value()
+        } else {
+            self.b.value()
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.a.is_valid() || self.b.is_valid()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        // make progress
+        if self.use_a {
+            let skip_b = self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key();
+            self.a.next()?;
+            if skip_b {
+                self.b.next()?;
+            }
+        } else {
+            let skip_a = self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key();
+            self.b.next()?;
+            if skip_a {
+                self.a.next()?;
+            }
+        }
+
+        // update next key to use
+        self.use_a = Self::choose_a(&self.a, &self.b);
+
+        Ok(())
     }
 }
