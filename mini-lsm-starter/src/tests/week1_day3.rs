@@ -24,7 +24,7 @@ use crate::{
 #[test]
 fn test_block_build_single_key() {
     let mut builder = BlockBuilder::new(16);
-    assert!(builder.add(KeySlice::for_testing_from_slice_no_ts(b"233"), b"23333"));
+    assert!(builder.add(KeySlice::for_testing_from_slice_no_ts(b"233"), b"233333"));
     builder.build();
 }
 
