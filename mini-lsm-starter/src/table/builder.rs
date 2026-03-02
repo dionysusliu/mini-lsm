@@ -26,7 +26,6 @@ use std::{mem, path::Path};
 use anyhow::Result;
 
 use super::{BlockMeta, SsTable};
-use crate::block;
 use crate::key::KeyBytes;
 use crate::table::FileObject;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
@@ -122,7 +121,7 @@ impl SsTableBuilder {
             last_key: KeyBytes::from_bytes(mem::take(&mut self.last_key).into()),
         };
         self.meta.push(last_meta);
-        self.data.append(&mut last_block.data);
+        self.data.extend_from_slice(&last_block.encode());
 
         // record where meta section starts
         let block_meta_offset = self.data.len();

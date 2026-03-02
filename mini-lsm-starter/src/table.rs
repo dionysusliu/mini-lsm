@@ -20,15 +20,16 @@ mod builder;
 mod iterator;
 
 use std::fs::File;
+use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 pub use builder::SsTableBuilder;
 use bytes::{Buf, BufMut};
 pub use iterator::SsTableIterator;
 
-use crate::block::{self, Block};
+use crate::block::{self, Block, BlockBuilder};
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 
@@ -192,7 +193,24 @@ impl SsTable {
 
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        // get start and end offset of this block
+        // last block is an exception because its end is out of scope
+
+        if block_idx >= self.block_meta.len() {
+            return Err(anyhow!("SSTable: read a block idx out of scope!"));
+        }
+
+        let start = self.block_meta.get(block_idx).unwrap().offset;
+        let end = if block_idx == self.block_meta.len() - 1 {
+            self.block_meta_offset
+        } else {
+            self.block_meta.get(block_idx + 1).unwrap().offset
+        };
+
+        // read from file
+        let block_raw_data = self.file.read(start as u64, (end - start) as u64)?;
+
+        Ok(Arc::new(Block::decode(block_raw_data.as_ref())))
     }
 
     /// Read a block from disk, with block cache. (Day 4)
@@ -204,7 +222,25 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        unimplemented!()
+        let (mut left, mut right) = (0_usize, self.block_meta.len());
+
+        // invariant in this binary search
+        // [0...l-1]: <= key
+        // [r..] > target
+        while left < right {
+            let mid = left + (right - left) / 2;
+            if self.check_gt_key(mid, key) {
+                right = mid;
+            } else {
+                left = mid + 1;
+            }
+        }
+
+        // key not in this table (all keys > in_key)
+        if left == 0 {
+            return 0;
+        }
+        left - 1
     }
 
     /// Get number of data blocks.
@@ -230,5 +266,11 @@ impl SsTable {
 
     pub fn max_ts(&self) -> u64 {
         self.max_ts
+    }
+
+    /// find the first block amongs blocks, whose first key > in_key
+    /// presumes idx doesn't go out of scope
+    fn check_gt_key(&self, idx: usize, in_key: KeySlice) -> bool {
+        self.block_meta[idx].first_key.as_key_slice() > in_key
     }
 }
