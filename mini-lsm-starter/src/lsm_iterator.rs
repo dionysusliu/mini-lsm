@@ -32,9 +32,11 @@ pub struct LsmIterator {
 impl LsmIterator {
     pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
         let mut it = Self { inner: iter };
+        // skip delete keys
         while it.inner.is_valid() && it.inner.value().is_empty() {
             it.inner.next()?;
         }
+
         Ok(it)
     }
 }
