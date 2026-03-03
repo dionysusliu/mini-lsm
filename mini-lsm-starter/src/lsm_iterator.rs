@@ -32,6 +32,8 @@ type LsmIteratorInner =
 pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
+    // iterator didn't reach the end_bound
+    is_valid: bool,
 }
 
 impl LsmIterator {
@@ -39,6 +41,7 @@ impl LsmIterator {
         let mut it = Self {
             inner: iter,
             end_bound,
+            is_valid: true,
         };
         // skip delete keys
         while it.inner.is_valid() && it.inner.value().is_empty() {
@@ -53,7 +56,7 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid()
+        self.is_valid && self.inner.is_valid()
     }
 
     fn key(&self) -> &[u8] {
@@ -73,9 +76,14 @@ impl StorageIterator for LsmIterator {
             }
         }
 
+        if !self.is_valid() {
+            return Ok(());
+        }
+
         // check if it reaches or exceeds end_bound
         if self.inner.is_valid() && !within_upper_bound(self.inner.key().raw_ref(), &self.end_bound)
         {
+            self.is_valid = false;
             return Ok(());
         }
 
