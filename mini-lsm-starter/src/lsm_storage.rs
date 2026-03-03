@@ -304,7 +304,7 @@ impl LsmStorageInner {
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
         // hold read lock
-        let state = self.state.read();
+        let state = { Arc::clone(&self.state.read()) };
 
         // iterator over first active memtables, then inactive ones
         let memtable_iter = std::iter::once(&state.memtable).chain(state.imm_memtables.iter());
@@ -316,6 +316,24 @@ impl LsmStorageInner {
                 }
                 return Ok(Some(value));
             }
+        }
+
+        // not in memtable, iterate over sstables
+        let mut sstable_iter =
+            Self::get_merged_sstable_snapshot_iterator(state, Bound::Included(_key));
+        while sstable_iter.is_valid() {
+            let key = sstable_iter.key();
+            // no more matching keys
+            if key.raw_ref() != _key {
+                return Ok(None);
+            }
+            let value = sstable_iter.value();
+            // valid
+            if !value.is_empty() {
+                return Ok(Some(Bytes::copy_from_slice(value)));
+            }
+            // deleted
+            sstable_iter.next()?;
         }
 
         Ok(None)
@@ -407,7 +425,31 @@ impl LsmStorageInner {
             .collect();
         let memtable_merge_iterator = MergeIterator::create(memtable_iters);
 
-        let sstable_iters: Vec<Box<SsTableIterator>> = state_snapshot
+        let sstable_merge_iterator =
+            Self::get_merged_sstable_snapshot_iterator(state_snapshot, _lower);
+
+        let two_merge_iter =
+            TwoMergeIterator::create(memtable_merge_iterator, sstable_merge_iterator).unwrap();
+
+        Ok(FusedIterator::new(LsmIterator::new(
+            two_merge_iter,
+            Self::map_bound(_upper),
+        )?))
+    }
+
+    fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
+        match bound {
+            Bound::Included(x) => Bound::Included(Bytes::copy_from_slice(x)),
+            Bound::Excluded(x) => Bound::Excluded(Bytes::copy_from_slice(x)),
+            Bound::Unbounded => Bound::Unbounded,
+        }
+    }
+
+    fn get_merged_sstable_snapshot_iterator(
+        state_snapshot: Arc<LsmStorageState>,
+        _lower: Bound<&[u8]>,
+    ) -> MergeIterator<SsTableIterator> {
+        let sstable_iters = state_snapshot
             .l0_sstables
             .iter()
             .map(|sst_id| -> Box<SsTableIterator> {
@@ -436,22 +478,6 @@ impl LsmStorageInner {
                 }
             })
             .collect();
-        let sstable_merge_iterator = MergeIterator::create(sstable_iters);
-
-        let two_merge_iter =
-            TwoMergeIterator::create(memtable_merge_iterator, sstable_merge_iterator).unwrap();
-
-        Ok(FusedIterator::new(LsmIterator::new(
-            two_merge_iter,
-            Self::map_bound(_upper),
-        )?))
-    }
-
-    fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
-        match bound {
-            Bound::Included(x) => Bound::Included(Bytes::copy_from_slice(x)),
-            Bound::Excluded(x) => Bound::Excluded(Bytes::copy_from_slice(x)),
-            Bound::Unbounded => Bound::Unbounded,
-        }
+        MergeIterator::create(sstable_iters)
     }
 }
