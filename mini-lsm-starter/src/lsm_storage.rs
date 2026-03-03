@@ -176,7 +176,17 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        // self.compaction_notifier.send(()).ok();
+        self.flush_notifier.send(()).ok();
+
+        // if let Some(handle) = self.compaction_thread.lock().take() {
+        //     handle.join().unwrap();
+        // }
+        if let Some(handle) = self.flush_thread.lock().take() {
+            handle.join().unwrap();
+        }
+
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
@@ -409,6 +419,10 @@ impl LsmStorageInner {
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
         // serialize state writer
         let state_lock = self.state_lock.lock(); // self.state would not change
+        // // count the memtable again after requiring lock
+        // if self.state.read().imm_memtables.len() + 1 <= self.options.num_memtable_limit {
+        //     return Ok(());
+        // }
 
         let mem_table = {
             let state = self.state.read();
