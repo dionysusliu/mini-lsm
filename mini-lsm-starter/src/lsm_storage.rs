@@ -25,6 +25,7 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::Result;
 use bytes::Bytes;
+use crossbeam_channel::after;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use rayon::prelude::*;
 
@@ -334,8 +335,11 @@ impl LsmStorageInner {
         }
 
         // not in memtable, iterate over sstables
-        let mut sstable_iter =
-            Self::get_merged_sstable_snapshot_iterator(state, Bound::Included(_key));
+        let mut sstable_iter = Self::get_merged_sstable_snapshot_iterator(
+            state,
+            Bound::Included(_key),
+            Bound::Included(_key),
+        );
         while sstable_iter.is_valid() {
             let key = sstable_iter.key();
             // no more matching keys
@@ -376,7 +380,7 @@ impl LsmStorageInner {
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        self.put(_key, &bytes::Bytes::new())
+        self.put(_key, &Bytes::new())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -401,7 +405,7 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        let new_mem_table = Arc::new(mem_table::MemTable::create(self.next_sst_id()));
+        let new_mem_table = Arc::new(MemTable::create(self.next_sst_id()));
 
         {
             let mut snapshot = self.state.read().as_ref().clone(); // we do copy on write, so clone the struct
@@ -475,10 +479,10 @@ impl LsmStorageInner {
         let memtable_merge_iterator = MergeIterator::create(memtable_iters);
 
         let sstable_merge_iterator =
-            Self::get_merged_sstable_snapshot_iterator(state_snapshot, _lower);
+            Self::get_merged_sstable_snapshot_iterator(state_snapshot, _lower, _upper);
 
         let two_merge_iter =
-            TwoMergeIterator::create(memtable_merge_iterator, sstable_merge_iterator).unwrap();
+            TwoMergeIterator::create(memtable_merge_iterator, sstable_merge_iterator)?;
 
         Ok(FusedIterator::new(LsmIterator::new(
             two_merge_iter,
@@ -497,40 +501,62 @@ impl LsmStorageInner {
     fn get_merged_sstable_snapshot_iterator(
         state_snapshot: Arc<LsmStorageState>,
         _lower: Bound<&[u8]>,
+        _upper: Bound<&[u8]>,
     ) -> MergeIterator<SsTableIterator> {
         let lower = Self::map_bound(_lower);
         let sstable_iters = state_snapshot
             .l0_sstables
             .par_iter()
-            .map(|sst_id| -> Box<SsTableIterator> {
+            .filter_map(|sst_id| -> Option<Box<SsTableIterator>> {
                 let table = Arc::clone(state_snapshot.sstables.get(sst_id).unwrap());
-                match &lower {
-                    Bound::Included(lower) => Box::new(
-                        SsTableIterator::create_and_seek_to_key(
-                            table,
-                            KeySlice::from_slice(lower.as_ref()),
-                        )
-                        .unwrap(),
-                    ),
 
+                if !Self::range_overlap(table.clone(), _lower, _upper) {
+                    return None;
+                }
+
+                let iter = match _lower {
+                    Bound::Included(lower) => {
+                        SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lower))
+                            .ok()?
+                    }
                     Bound::Excluded(lower) => {
                         let mut iter = SsTableIterator::create_and_seek_to_key(
                             table,
-                            KeySlice::from_slice(lower.as_ref()),
+                            KeySlice::from_slice(lower),
                         )
-                        .unwrap();
-                        if iter.is_valid() && iter.key().raw_ref() == lower.as_ref() {
-                            iter.next().unwrap();
+                        .ok()?;
+                        if iter.is_valid() && iter.key().raw_ref() == lower {
+                            iter.next().ok()?;
                         }
-                        Box::new(iter)
+                        iter
                     }
+                    Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table).ok()?,
+                };
 
-                    Bound::Unbounded => {
-                        Box::new(SsTableIterator::create_and_seek_to_first(table).unwrap())
-                    }
-                }
+                Some(Box::new(iter))
             })
             .collect();
         MergeIterator::create(sstable_iters)
+    }
+
+    /// check whether SStable's key range overlaps the given key range
+    /// helper for scan lookup
+    fn range_overlap(table: Arc<SsTable>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
+        let first = table.first_key().raw_ref();
+        let last = table.last_key().raw_ref();
+
+        let before_lower = match lower {
+            Bound::Included(key) => last < key,
+            Bound::Excluded(key) => last <= key,
+            Bound::Unbounded => false,
+        };
+
+        let after_upper = match upper {
+            Bound::Included(key) => first > key,
+            Bound::Excluded(key) => first >= key,
+            Bound::Unbounded => false,
+        };
+
+        !before_lower && !after_upper
     }
 }

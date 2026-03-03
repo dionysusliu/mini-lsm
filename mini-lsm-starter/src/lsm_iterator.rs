@@ -36,6 +36,15 @@ pub struct LsmIterator {
     is_valid: bool,
 }
 
+/// helpe function, checking whether the key exceeds the upper bound
+fn within_upper_bound(key: &[u8], bound: &Bound<Bytes>) -> bool {
+    match bound {
+        Bound::Included(end) => key <= end.as_ref(),
+        Bound::Excluded(end) => key < end.as_ref(),
+        Bound::Unbounded => true,
+    }
+}
+
 impl LsmIterator {
     pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
         let mut it = Self {
@@ -46,6 +55,9 @@ impl LsmIterator {
         // skip delete keys
         while it.inner.is_valid() && it.inner.value().is_empty() {
             it.inner.next()?;
+        }
+        if !it.inner.is_valid() || !within_upper_bound(it.inner.key().raw_ref(), &it.end_bound) {
+            it.is_valid = false;
         }
 
         Ok(it)
@@ -68,29 +80,24 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        fn within_upper_bound(key: &[u8], bound: &Bound<Bytes>) -> bool {
-            match bound {
-                Bound::Included(end) => key <= end.as_ref(),
-                Bound::Excluded(end) => key < end.as_ref(),
-                Bound::Unbounded => true,
-            }
-        }
-
         if !self.is_valid() {
             return Ok(());
         }
 
-        // check if it reaches or exceeds end_bound
-        if self.inner.is_valid() && !within_upper_bound(self.inner.key().raw_ref(), &self.end_bound)
-        {
-            self.is_valid = false;
-            return Ok(());
-        }
-
         self.inner.next()?;
+
         // skip deleted keys
         while self.inner.is_valid() && self.inner.value().is_empty() {
             self.inner.next()?;
+        }
+        // invalidate because no more keys to read
+        if !self.inner.is_valid() {
+            self.is_valid = false;
+            return Ok(());
+        }
+        // check if it reaches or exceeds end_bound
+        if !within_upper_bound(self.inner.key().raw_ref(), &self.end_bound) {
+            self.is_valid = false;
         }
 
         Ok(())
