@@ -25,6 +25,7 @@ use std::sync::atomic::AtomicUsize;
 use anyhow::Result;
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
+use rayon::prelude::*;
 
 use crate::block::Block;
 use crate::compact::{
@@ -449,24 +450,28 @@ impl LsmStorageInner {
         state_snapshot: Arc<LsmStorageState>,
         _lower: Bound<&[u8]>,
     ) -> MergeIterator<SsTableIterator> {
+        let lower = Self::map_bound(_lower);
         let sstable_iters = state_snapshot
             .l0_sstables
-            .iter()
+            .par_iter()
             .map(|sst_id| -> Box<SsTableIterator> {
                 let table = Arc::clone(state_snapshot.sstables.get(sst_id).unwrap());
-                match _lower {
+                match &lower {
                     Bound::Included(lower) => Box::new(
-                        SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lower))
-                            .unwrap(),
+                        SsTableIterator::create_and_seek_to_key(
+                            table,
+                            KeySlice::from_slice(lower.as_ref()),
+                        )
+                        .unwrap(),
                     ),
 
                     Bound::Excluded(lower) => {
                         let mut iter = SsTableIterator::create_and_seek_to_key(
                             table,
-                            KeySlice::from_slice(lower),
+                            KeySlice::from_slice(lower.as_ref()),
                         )
                         .unwrap();
-                        if iter.is_valid() && iter.key().raw_ref() == lower {
+                        if iter.is_valid() && iter.key().raw_ref() == lower.as_ref() {
                             iter.next().unwrap();
                         }
                         Box::new(iter)
