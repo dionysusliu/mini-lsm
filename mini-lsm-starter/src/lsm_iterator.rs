@@ -15,23 +15,31 @@
 // #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 // #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use anyhow::{Error, Result};
-
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::table::SsTableIterator;
 use crate::{
     iterators::{StorageIterator, merge_iterator::MergeIterator},
     mem_table::MemTableIterator,
 };
+use anyhow::{Error, Result};
+use bytes::Bytes;
+use std::ops::Bound;
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the course for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    end_bound: Bound<Bytes>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        let mut it = Self { inner: iter };
+    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+        let mut it = Self {
+            inner: iter,
+            end_bound,
+        };
         // skip delete keys
         while it.inner.is_valid() && it.inner.value().is_empty() {
             it.inner.next()?;
@@ -57,7 +65,22 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
+        fn within_upper_bound(key: &[u8], bound: &Bound<Bytes>) -> bool {
+            match bound {
+                Bound::Included(end) => key <= end.as_ref(),
+                Bound::Excluded(end) => key < end.as_ref(),
+                Bound::Unbounded => true,
+            }
+        }
+
+        // check if it reaches or exceeds end_bound
+        if self.inner.is_valid() && !within_upper_bound(self.inner.key().raw_ref(), &self.end_bound)
+        {
+            return Ok(());
+        }
+
         self.inner.next()?;
+        // skip deleted keys
         while self.inner.is_valid() && self.inner.value().is_empty() {
             self.inner.next()?;
         }
