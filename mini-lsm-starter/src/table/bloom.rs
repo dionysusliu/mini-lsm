@@ -75,6 +75,11 @@ impl Bloom {
         buf.put_u8(self.k);
     }
 
+    /// byte length of bloom filter
+    pub fn byte_len(&self) -> usize {
+        self.filter.as_ref().len() + 1
+    }
+
     /// Get bloom filter bits per key from entries count and FPR
     pub fn bloom_bits_per_key(entries: usize, false_positive_rate: f64) -> usize {
         let size =
@@ -93,7 +98,6 @@ impl Bloom {
         let mut filter = BytesMut::with_capacity(nbytes);
         filter.resize(nbytes, 0);
 
-        // TODO: build the bloom filter
         for &key_hash in keys {
             let mut h = key_hash;
             let delta = h.rotate_left(15);
@@ -121,7 +125,6 @@ impl Bloom {
             let delta = h.rotate_left(15);
             let mut h = h;
 
-            // TODO: probe the bloom filter
             for _ in 0..self.k {
                 let bit_pos = (h as usize) % nbits;
                 if !self.filter.get_bit(bit_pos) {

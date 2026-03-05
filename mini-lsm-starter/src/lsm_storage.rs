@@ -339,6 +339,7 @@ impl LsmStorageInner {
             state,
             Bound::Included(_key),
             Bound::Included(_key),
+            Some(_key),
         );
         while sstable_iter.is_valid() {
             let key = sstable_iter.key();
@@ -479,7 +480,7 @@ impl LsmStorageInner {
         let memtable_merge_iterator = MergeIterator::create(memtable_iters);
 
         let sstable_merge_iterator =
-            Self::get_merged_sstable_snapshot_iterator(state_snapshot, _lower, _upper);
+            Self::get_merged_sstable_snapshot_iterator(state_snapshot, _lower, _upper, None);
 
         let two_merge_iter =
             TwoMergeIterator::create(memtable_merge_iterator, sstable_merge_iterator)?;
@@ -502,6 +503,7 @@ impl LsmStorageInner {
         state_snapshot: Arc<LsmStorageState>,
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
+        _point_key: Option<&[u8]>,
     ) -> MergeIterator<SsTableIterator> {
         let lower = Self::map_bound(_lower);
         let sstable_iters = state_snapshot
@@ -509,6 +511,16 @@ impl LsmStorageInner {
             .par_iter()
             .filter_map(|sst_id| -> Option<Box<SsTableIterator>> {
                 let table = Arc::clone(state_snapshot.sstables.get(sst_id).unwrap());
+
+                // bloom filter check
+                if let Some(point_key) = _point_key {
+                    let key_hash = farmhash::fingerprint32(point_key);
+                    if let Some(bloom) = table.bloom.as_ref()
+                        && !bloom.may_contain(key_hash)
+                    {
+                        return None;
+                    }
+                }
 
                 if !Self::range_overlap(table.clone(), _lower, _upper) {
                     return None;
