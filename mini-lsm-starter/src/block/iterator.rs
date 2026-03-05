@@ -144,11 +144,43 @@ impl BlockIterator {
     fn check_ge_at(&self, idx: usize, key: KeySlice) -> bool {
         let kv_offset = self.block.offsets[idx] as usize;
         let mut buf = &self.block.data[kv_offset..];
-        // key
-        let key_len = buf.get_u16() as usize;
-        let key_slice = KeySlice::from_slice(&buf[..key_len]);
 
-        key_slice >= key
+        let overlap_len = buf.get_u16() as usize;
+        let rest_key_len = buf.get_u16() as usize;
+        let rest_key = &buf[..rest_key_len];
+
+        let first = self.first_key.raw_ref();
+        let target = key.raw_ref();
+
+        // compare with first key first, then compare with rest of the key
+        let mut i = 0_usize;
+        while i < overlap_len {
+            if i >= target.len() {
+                return true;
+            }
+            let a = first[i];
+            let b = target[i];
+            if a != b {
+                return a > b;
+            }
+            i += 1;
+        }
+        let mut j = 0_usize;
+        while j < rest_key_len {
+            let ti = i + j;
+            if ti >= target.len() {
+                return true;
+            }
+            let a = rest_key[j];
+            let b = target[ti];
+            if a != b {
+                return a > b;
+            }
+            j += 1;
+        }
+
+        // reconstructed key fully consumed
+        (overlap_len + rest_key_len) >= target.len()
     }
 
     /// set iterator at i-th KV pair, where i in [0, number_of_elements)
@@ -157,13 +189,17 @@ impl BlockIterator {
         let kv_offset = self.block.offsets[i] as usize;
         // key
         let mut buf = &self.block.data[kv_offset..];
-        let key_len = buf.get_u16() as usize;
-        self.key
-            .set_from_slice(KeySlice::from_slice(&buf[..key_len]));
-        buf.advance(key_len);
+        let overlap_len = buf.get_u16() as usize;
+        let rest_key_len = buf.get_u16() as usize;
+        let rest_key = &buf[..rest_key_len];
+        // reconstruct current kkey
+        self.key.clear();
+        self.key.append(&self.first_key.raw_ref()[..overlap_len]);
+        self.key.append(rest_key);
+        buf.advance(rest_key_len);
         // value range
         let val_len = buf.get_u16() as usize;
-        let val_start = kv_offset + 4 + key_len;
+        let val_start = kv_offset + 4 + rest_key_len + 2;
         self.value_range = (val_start, val_start + val_len);
         // idx
         self.idx = i;
@@ -172,8 +208,9 @@ impl BlockIterator {
     /// called once on creation, set the first key field
     fn set_first_key(&mut self) {
         let mut buf = &self.block.data[..];
+        buf.advance(2); // ignore the overlap_len
         let key_len = buf.get_u16() as usize;
-        self.first_key
-            .set_from_slice(KeySlice::from_slice(&buf[..key_len]));
+        self.first_key.clear();
+        self.first_key.append(&buf[..key_len]);
     }
 }

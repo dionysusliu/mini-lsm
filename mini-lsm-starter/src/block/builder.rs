@@ -48,10 +48,20 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let key_len: u16 = key.len() as u16;
         let value_len: u16 = value.len() as u16;
 
-        let entry_size = 2 + key.len() + 2 + value.len();
+        // key_overlap_len (u16) | rest_key_len (u16) | key (rest_key_len)
+        let overlap_len = self
+            .first_key
+            .as_key_slice()
+            .raw_ref()
+            .iter()
+            .zip(key.raw_ref().iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let rest_key_len = key.len() - overlap_len;
+
+        let entry_size = 4 + rest_key_len + 2 + value.len();
         let footer_size = (self.offsets.len() + 1) * 2 + 2;
 
         // reject if full, unless this is the first entry
@@ -62,16 +72,19 @@ impl BlockBuilder {
         // record offset of this entry = current end and data section
         self.offsets.push(self.data.len() as u16);
 
-        // encode entry into data using BufMut
-        self.data.put_u16(key_len);
-        self.data.put_slice(key.raw_ref());
-        self.data.put_u16(value_len);
-        self.data.put_slice(value);
-
-        // record first key
+        // record first key, is empty
         if self.first_key.is_empty() {
             self.first_key = key.to_key_vec();
         }
+
+        // encode key, by comparing with the first key, and store as:
+        self.data.put_u16(overlap_len as u16);
+        self.data.put_u16(rest_key_len as u16);
+        self.data.put_slice(&key.raw_ref()[overlap_len..]);
+
+        // encode value
+        self.data.put_u16(value_len);
+        self.data.put_slice(value);
 
         true
     }
