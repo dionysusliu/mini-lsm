@@ -163,6 +163,10 @@ impl SsTableBuilder {
         })
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.first_key.is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn build_for_test(self, path: impl AsRef<Path>) -> Result<SsTable> {
         self.build(0, None, path)

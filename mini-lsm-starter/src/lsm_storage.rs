@@ -35,6 +35,7 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::StorageIterator;
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
@@ -340,7 +341,7 @@ impl LsmStorageInner {
             Bound::Included(_key),
             Bound::Included(_key),
             Some(_key),
-        );
+        )?;
         while sstable_iter.is_valid() {
             let key = sstable_iter.key();
             // no more matching keys
@@ -480,7 +481,7 @@ impl LsmStorageInner {
         let memtable_merge_iterator = MergeIterator::create(memtable_iters);
 
         let sstable_merge_iterator =
-            Self::get_merged_sstable_snapshot_iterator(state_snapshot, _lower, _upper, None);
+            Self::get_merged_sstable_snapshot_iterator(state_snapshot, _lower, _upper, None)?;
 
         let two_merge_iter =
             TwoMergeIterator::create(memtable_merge_iterator, sstable_merge_iterator)?;
@@ -504,14 +505,19 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
         _point_key: Option<&[u8]>,
-    ) -> MergeIterator<SsTableIterator> {
+    ) -> Result<TwoMergeIterator<MergeIterator<SsTableIterator>, MergeIterator<SstConcatIterator>>>
+    {
         let lower = Self::map_bound(_lower);
-        let sstable_iters = state_snapshot
+        let l0_iters = state_snapshot
             .l0_sstables
             .par_iter()
             .filter_map(|sst_id| -> Option<Box<SsTableIterator>> {
                 let table = Arc::clone(state_snapshot.sstables.get(sst_id).unwrap());
 
+                // compare key range
+                if !Self::range_overlap(table.clone(), _lower, _upper) {
+                    return None;
+                }
                 // bloom filter check
                 if let Some(point_key) = _point_key {
                     let key_hash = farmhash::fingerprint32(point_key);
@@ -522,11 +528,8 @@ impl LsmStorageInner {
                     }
                 }
 
-                if !Self::range_overlap(table.clone(), _lower, _upper) {
-                    return None;
-                }
-
                 let iter = match _lower {
+                    Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table).ok()?,
                     Bound::Included(lower) => {
                         SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lower))
                             .ok()?
@@ -542,13 +545,54 @@ impl LsmStorageInner {
                         }
                         iter
                     }
-                    Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table).ok()?,
                 };
 
                 Some(Box::new(iter))
             })
             .collect();
-        MergeIterator::create(sstable_iters)
+        let l0_merge = MergeIterator::create(l0_iters);
+
+        let mut level_iters: Vec<Box<SstConcatIterator>> = Vec::new();
+        for (_level, ids) in &state_snapshot.levels {
+            let tables: Vec<_> = ids
+                .iter()
+                .filter_map(|id| {
+                    let t = Arc::clone(state_snapshot.sstables.get(id).unwrap());
+                    if !Self::range_overlap(t.clone(), _lower, _upper) {
+                        return None;
+                    }
+                    if let Some(k) = _point_key {
+                        let h = farmhash::fingerprint32(k);
+                        if let Some(bloom) = t.bloom.as_ref()
+                            && !bloom.may_contain(h)
+                        {
+                            return None;
+                        }
+                    }
+                    Some(t)
+                })
+                .collect();
+
+            if tables.is_empty() {
+                continue;
+            }
+
+            let mut it = match _lower {
+                Bound::Included(k) | Bound::Excluded(k) => {
+                    SstConcatIterator::create_and_seek_to_key(tables, KeySlice::from_slice(k))?
+                }
+                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(tables)?,
+            };
+            if matches!(_lower, Bound::Excluded(k)
+                if it.is_valid() && it.key().raw_ref() == k)
+            {
+                it.next()?;
+            }
+            level_iters.push(Box::new(it));
+        }
+        let level_merge = MergeIterator::create(level_iters);
+
+        TwoMergeIterator::create(l0_merge, level_merge)
     }
 
     /// check whether SStable's key range overlaps the given key range
