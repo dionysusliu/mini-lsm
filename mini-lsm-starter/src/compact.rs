@@ -132,6 +132,7 @@ impl LsmStorageInner {
                 l0_sstables,
                 l1_sstables,
             } => (l0_sstables, l1_sstables),
+            CompactionTask::Simple(task) => (&task.upper_level_sst_ids, &task.lower_level_sst_ids),
             _ => unreachable!(),
         };
 
@@ -261,7 +262,27 @@ impl LsmStorageInner {
     }
 
     fn trigger_compaction(&self) -> Result<()> {
-        self.force_full_compaction()
+        let snapshot = Arc::clone(&self.state.read());
+        let task = self
+            .compaction_controller
+            .generate_compaction_task(snapshot.as_ref());
+        if let Some(task) = task {
+            // create compaction files
+            let sstables = self.compact(&task)?;
+            // get compaction results
+            let outputs: Vec<usize> = sstables.iter().map(|sst| sst.sst_id()).collect();
+            let (new_state, files_to_removed) = self
+                .compaction_controller
+                .apply_compaction_result(&snapshot, &task, &outputs, false);
+            // update state
+            *self.state.write() = Arc::new(new_state);
+            // remove files
+            for id in files_to_removed {
+                let _ = std::fs::remove_file(self.path_of_sst(id));
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn spawn_compaction_thread(
