@@ -129,6 +129,7 @@ pub enum CompactionOptions {
 }
 
 impl LsmStorageInner {
+    /// generate new sst files from the storage iterator
     fn build_ssts_from_iter<I>(
         &self,
         mut iter: I,
@@ -176,6 +177,7 @@ impl LsmStorageInner {
         Ok(outputs)
     }
 
+    /// compact L0 with L1
     fn compact_l0_to_l1(
         &self,
         snapshot: &Arc<LsmStorageState>,
@@ -210,6 +212,8 @@ impl LsmStorageInner {
         self.build_ssts_from_iter(iter, compact_to_bottom)
     }
 
+    /// compact Li with Li+1, where i >= 1
+    /// using concat iterator to avoid unnecessary block loads
     fn compact_level_to_level(
         &self,
         snapshot: &Arc<LsmStorageState>,
@@ -247,6 +251,36 @@ impl LsmStorageInner {
         self.build_ssts_from_iter(iter, compact_to_bottom)
     }
 
+    /// compact multiple levels (tiers/sorted runs)
+    fn compact_tiered(
+        &self,
+        snapshot: &LsmStorageState,
+        tiers: &[(usize, Vec<usize>)],
+        compact_to_bottom: bool,
+    ) -> Result<Vec<Arc<SsTable>>> {
+        // construct iterators
+        let mut tier_iters: Vec<Box<SstConcatIterator>> = Vec::new();
+        for (_tier_id, sst_ids) in tiers {
+            let tier_tables: Vec<Arc<SsTable>> = sst_ids
+                .iter()
+                .map(|sst_id| snapshot.sstables.get(sst_id).unwrap().clone())
+                .collect();
+
+            if tier_tables.is_empty() {
+                continue;
+            }
+
+            let iter = SstConcatIterator::create_and_seek_to_first(tier_tables)?;
+            if iter.is_valid() {
+                tier_iters.push(Box::new(iter));
+            }
+        }
+
+        let merged = MergeIterator::create(tier_iters);
+
+        self.build_ssts_from_iter(merged, compact_to_bottom)
+    }
+
     fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
         let snapshot = Arc::clone(&self.state.read());
         let compact_to_bottom = task.compact_to_bottom_level();
@@ -268,6 +302,9 @@ impl LsmStorageInner {
                 &task.lower_level_sst_ids,
                 compact_to_bottom,
             ),
+            CompactionTask::Tiered(task) => {
+                self.compact_tiered(&snapshot, &task.tiers, compact_to_bottom)
+            }
             _ => unimplemented!(),
         }
     }
