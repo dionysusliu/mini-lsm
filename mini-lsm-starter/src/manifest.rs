@@ -63,9 +63,8 @@ impl Manifest {
 
         let file = OpenOptions::new()
             .create(true)
-            .truncate(true)
             .read(true)
-            .write(true)
+            .append(true)
             .open(_path)?;
 
         Ok((

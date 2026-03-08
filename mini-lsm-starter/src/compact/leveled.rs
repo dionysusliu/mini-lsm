@@ -18,7 +18,7 @@ use std::collections::HashSet;
 
 use crate::lsm_storage::LsmStorageState;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeveledCompactionTask {
     // if upper_level is `None`, then it is L0 compaction
     pub upper_level: Option<usize>,
@@ -232,22 +232,28 @@ impl LeveledCompactionController {
             .1
             .retain(|id| !lower_set.contains(id));
         if !_output.is_empty() {
-            // Derive insertion anchor from upper input key range (always exists in snapshot).
-            let upper_min = _task
-                .upper_level_sst_ids
-                .iter()
-                .map(|id| _snapshot.sstables.get(id).unwrap().first_key())
-                .min()
-                .unwrap();
-            let insert_pos = new_state.levels[lower_idx]
-                .1
-                .iter()
-                .position(|id| _snapshot.sstables.get(id).unwrap().last_key() >= upper_min)
-                .unwrap_or(new_state.levels[lower_idx].1.len());
+            if _in_recovery {
+                // no output SST metadata yet during replay 
+                new_state.levels[lower_idx].1.extend_from_slice(_output);
+            } else {
+                // Derive insertion anchor from upper input key range (always exists in snapshot).
+                let upper_min = _task
+                    .upper_level_sst_ids
+                    .iter()
+                    .map(|id| _snapshot.sstables.get(id).unwrap().first_key())
+                    .min()
+                    .unwrap();
+                let insert_pos = new_state.levels[lower_idx]
+                    .1
+                    .iter()
+                    .position(|id| _snapshot.sstables.get(id).unwrap().last_key() >= upper_min)
+                    .unwrap_or(new_state.levels[lower_idx].1.len());
 
-            new_state.levels[lower_idx]
-                .1
-                .splice(insert_pos..insert_pos, _output.iter().copied());
+                new_state.levels[lower_idx]
+                    .1
+                    .splice(insert_pos..insert_pos, _output.iter().copied());
+            }
+            
         }
 
         (new_state, files_to_remove)
