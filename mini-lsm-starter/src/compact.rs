@@ -305,6 +305,18 @@ impl LsmStorageInner {
             CompactionTask::Tiered(task) => {
                 self.compact_tiered(&snapshot, &task.tiers, compact_to_bottom)
             }
+            CompactionTask::Leveled(task) if task.upper_level.is_none() => self.compact_l0_to_l1(
+                &snapshot,
+                &task.upper_level_sst_ids,
+                &task.lower_level_sst_ids,
+                compact_to_bottom,
+            ),
+            CompactionTask::Leveled(task) => self.compact_level_to_level(
+                &snapshot,
+                &task.upper_level_sst_ids,
+                &task.lower_level_sst_ids,
+                compact_to_bottom,
+            ),
             _ => unimplemented!(),
         }
     }
